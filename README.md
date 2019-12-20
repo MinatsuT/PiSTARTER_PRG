@@ -17,3 +17,6 @@ HSVサークルのサンプルです。
 
 ## mnt_THE_TOWER_OF_GOLF.prg
 平面ゴルフゲームです。
+
+## mnt_simple_hashtable.prg
+簡単なハッシュテーブル（連想配列）のサンプルです。

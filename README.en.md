@@ -17,3 +17,6 @@ Mountain generation using mid-point displacement algorithm.
 
 ## mnt_THE_TOWER_OF_GOLF.prg
 A side view golf game.
+
+## mnt_simple_hashtable.prg
+A simple hash table implementation.
