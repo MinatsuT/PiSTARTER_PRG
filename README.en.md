@@ -20,3 +20,7 @@ A side view golf game.
 
 ## mnt_simple_hashtable.prg
 A simple hash table implementation.
+
+## mnt_TemariMaker.prg
+Japanese "Temari" pattern generator.
+Refer to TemariTextureExample.png for an input example.

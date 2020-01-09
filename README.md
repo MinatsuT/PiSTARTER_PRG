@@ -20,3 +20,7 @@ HSVサークルのサンプルです。
 
 ## mnt_simple_hashtable.prg
 簡単なハッシュテーブル（連想配列）のサンプルです。
+
+## mnt_TemariMaker.prg
+手毬柄を生成するプログラムです。
+入力ファイルは、TemariTextureExample.png を参考にしてください。
