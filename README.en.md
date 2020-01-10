@@ -23,4 +23,4 @@ A simple hash table implementation.
 
 ## mnt_TemariMaker.prg
 Japanese "Temari" pattern generator.
-Refer to TemariTemplate.png and TemariTextureExample.png for a texture image.
+Refer to TemariTemplate.* and TemariTextureExample.png for a texture image.

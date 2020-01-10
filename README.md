@@ -23,4 +23,4 @@ HSVサークルのサンプルです。
 
 ## mnt_TemariMaker.prg
 手毬柄を生成するプログラムです。
-入力として与えるテクスチャイメージは、TemariTemplate.png  や TemariTextureExample.png を参考にしてください。
+入力として与えるテクスチャイメージは、TemariTemplate.*  や TemariTextureExample.png を参考にしてください。
