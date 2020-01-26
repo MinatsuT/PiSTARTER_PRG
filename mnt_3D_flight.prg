@@ -14,7 +14,7 @@ VAR VRAMW=1280,VRAMH=1024
 'xscreen 1280,720
 'CX=1280/2:CY=720/2
 
-VAR VER$="1.01"
+VAR VER$="1.02"
 
 'パーリンノイズ関係
 var grid=128
@@ -76,6 +76,7 @@ createWorld
 createSky
 createMap
 createCsr
+visible 0,1,1
 flight
 end
 
@@ -242,7 +243,7 @@ def flight
 
  var st=millisec
  var nxt=st+5000
- var frames=0
+ var frames=0,fps
  var last=millisec
  dim v[3],ascendingForce[3]
  var rollW=0,rollA=0.005,rollBrk=0.9
@@ -307,6 +308,11 @@ endif
   if button(0,#BID_RIGHT) || autoR then rollW=rollW-rollA
   if button(0,#BID_UP)    || autoU then pitchW=pitchW+pitchA
   if button(0,#BID_DOWN)  || autoD then pitchW=pitchW-pitchA
+
+  var sx,sy:stick 0 out sx,sy
+  if abs(sx)>0.1 then inc rollW,-rollA*sx
+  if abs(sy)>0.1 then inc pitchW,-pitchA*sy
+  
   rollW=rollW*rollBrk
   pitchW=pitchW*pitchBrk
   rotn ci,ci,ck,rollW
@@ -333,15 +339,17 @@ endif
    rollW=0:pitchW=0
   endif
 
-  IF BTN_PRESS and (1<<#BID_Y) THEN
-   dispGrid=!dispGrid
-   LOCATE 0,0:?"グリッド表示";" ON"*dispGrid;"OFF"*!dispGrid
-  ENDIF
 
   gpage vp,!vp
   drawAhead cam,ci,cj,ck
+  IF BTN_PRESS and (1<<#BID_Y) THEN
+   dispGrid=!dispGrid
+   'LOCATE 0,0:?"グリッド表示";" ON"*dispGrid;"OFF"*!dispGrid
+  ENDIF
+  gputchr 0,8*0,"グリッド表示"+" ON"*dispGrid+"OFF"*!dispGrid
   gputchr 0,8*2,format$("spd=%6.2f",fwdV)
   gputchr 0,8*3,format$("altitude=%6.2f",cam[1])
+  gputchr 0,8*1,format$("%6.2ffps",fps)
   vp=!vp
 
   spofs sp_csr,mapOX+cam[0]*mapMag,mapOY+(mapH-cam[2])*mapMag,-10
@@ -351,8 +359,9 @@ endif
   var ed=millisec
   if ed>=nxt then
    var dur=(ed-st)/1000
-   var fps=frames/dur
-   locate 0,1:?format$("%6.2ffps",fps)
+   fps=frames/dur
+   'locate 0,1:?format$("%6.2ffps",fps)
+   gputchr 0,8*1,format$("%6.2ffps",fps)
    st=ed
    nxt=st+5000
    frames=0
