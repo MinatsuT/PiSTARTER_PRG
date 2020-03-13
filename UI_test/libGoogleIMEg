@@ -1,0 +1,856 @@
+'
+' Google CGI IME ライブラリ with グラフィックプリント
+'     by みなつ
+'
+' Powered by Goole CGI API for Japanese Input
+' http://www.google.co.jp/ime/cgiapi.html
+'
+
+'【組み込み方】 組み込みたいプログラムの先頭付近に,下記の行をコピーして下さい.
+'exec "prg3:libGoogleIMEg"
+
+'●使い方1:同期型(INPUTと同じように,入力が完了するまで戻ってきません.)
+'k$=kanji_input$()
+
+'●使い方2:非同期型(INKEY$()と同じように,キー入力が無くても戻ってきます.)
+'k$=kanji_input_async$()
+'if kanji_input_finish() then ?k$ (kanji_input_finish()が1のとき,入力完了です.)
+
+option strict
+
+var ver$="1.06"
+var lf$=chr$(&h0A)
+var q$=chr$(&h22)
+var esc$=chr$(&h1b)
+
+var R$=chr$(&h1c)
+var L$=chr$(&h1d)
+var U$=chr$(&h1e)
+var D$=chr$(&h1f)
+var BS$=chr$(&h08)
+var enter$=chr$(&h0d)
+
+var cx,cy,cw,ch
+var x,y
+var xOffset
+var k$
+var edit$,editCsr,editLen
+var yomi$,yomiCsr,yomiLen
+var knji$,knjiCsr,knjiLen
+var json$,knjiCand,knjiBunsetsu,knjiFirst$,knjiRest$
+dim knjiAllCand$[0]
+var lastLen
+var blinkCounter
+var lastBlink
+var blinkX,blinkY
+var kouho$[0,0]
+
+'state
+var idle=0
+var edit=1
+var yomi=2
+var henkan=3
+var state=idle
+
+'result
+var kanji_result
+var result_finish
+
+'グラフィック用漢字フォント
+dim gfCoord%[0]
+dim gfFont%[0]
+dim gfPallet%[3]
+var gfWP=2
+var gfCoord$="fontcoord.dat"
+var gfName$="deffont16.dat"
+var gfSize=16
+
+end
+
+'ヘルプ
+'--------------------------------------------------
+common def kanji_help
+' gcPrintln "Google CGI IME "+ver$+" by みなつ
+ gcPrintln "【日本語入力方法】
+ gcPrintln "ローマ字入力への切り替え:全角/半角キー,変換キー,Ctrl+K
+ gcPrintln "アルファベットへの切り替え:全角/半角キー,無変換キー
+ gcPrintln "
+ gcPrintln "スペースキー:変換/次候補
+ gcPrintln "エンター:確定
+ gcPrintln "ESC:キャンセル
+ gcPrintln "カーソルキーの←→:文節の長さを変更(変換中)
+ gcPrint "カーソルキーの:前候補/次候補(変換中)
+end
+
+
+'MAIN routine
+'==================================================
+
+'初期化
+'--------------------------------------------------
+def kanji_init
+ gfInit 'グラフィック用漢字フォント初期化
+
+ state=idle
+ x=gcCsrx()
+ y=gcCsry()
+ xOffset=0
+ editCsr=0
+ yomiCsr=0
+ knjiCsr=0
+ edit$=""
+ yomi$=""
+ knji$=""
+ json$=""
+ knjiCand=0
+ knjiBunsetsu=0
+ knjiFirst$=""
+ knjiRest$=""
+ lastLen=0
+ blinkCounter=maincnt
+ lastBlink=0
+ gcGetConsole out cx,cy,cw,ch
+end
+
+'漢字入力完了の判定
+'--------------------------------------------------
+common def kanji_input_finish()
+ return state==idle
+end
+
+'漢字入力(同期型)
+'--------------------------------------------------
+common def kanji_input$()
+ kanji_init
+ repeat
+  var ret$=kanji_input_async$()
+  vsync
+ until state==idle
+
+ if ret$==esc$ then ret$=""
+ return ret$
+end
+
+'漢字入力(非同期型)
+'--------------------------------------------------
+common def kanji_input_async$()
+ if state==idle then kanji_init:state=edit
+
+ k$=inkey$()
+ if k$=="" then kanji_csrBlink:return ""
+ blinkCounter=maincnt
+
+ if state==edit then kanji_edit
+ if state==yomi then kanji_yomi
+ if state==henkan then kanji_henkan
+
+ kanji_csrBlinkClr
+
+ var printMax=cw-x-1
+
+ initSafeCut xOffset,printMax
+ gcLocate x,y:gcPrint safeCut$(" "*lastLen)
+ lastLen=editLen
+
+ var csrPos=editCsr+yomiCsr-xOffset
+ csrPos=max(ceil(printmax/2),min(printMax,csrPos))
+ xOffset=max(0,editCsr+yomiCsr-csrPos)
+
+ gcLocate x,y
+ initSafeCut xOffset,printMax
+ if editCsr>0 then gcColor #white,0:gcPrint safeCut$(left$(edit$,editCsr))
+ if state==yomi then gcColor #cyan,0:gcPrint safeCut$(yomi$):inc lastLen,yomiLen
+ if state==henkan then gcColor 0,#yellow:gcPrint safeCut$(knjiFirst$):gcColor #yellow,0:gcPrint safeCut$(knjiRest$):inc lastLen,knjiLen
+ gcColor #white,0:gcPrint safeCut$(right$(edit$,editLen-editCsr))
+
+ kanji_csrBlink
+
+ var ret$=""
+ if state==idle then
+  kanji_csrBlinkClr
+  gcLocate x,y:gcPrintln edit$
+  ret$=edit$
+ endif
+
+ return ret$
+end
+
+var scCut,scPrintable
+def initSafeCut cutLen,printMax
+ scCut=cutLen:scPrintable=printMax
+end
+
+def safeCut$(s$)
+ var l=len(s$)
+ var cut=min(scCut,l)
+ dec scCut,cut
+ var rest=l-cut
+ var t$=right$(s$,rest)
+ var printLen=min(scPrintable,len(t$))
+ dec scPrintable,printLen
+ return left$(t$,printLen)
+end
+
+
+'STATE:edit
+'--------------------------------------------------
+def kanji_edit
+ if isSpecial(k$) then
+  if k$==R$ && editCsr<editLen then inc editCsr
+  if k$==L$ && editCsr>0 then dec editCsr
+  if k$==BS$ && editCsr>0 then dec editCsr:edit$[editCsr]=""
+  if k$==" " then insStr edit$,editCsr,k$:inc editCsr
+  if k$==esc$ then edit$=esc$:state=idle
+  if k$==enter$ then state=idle
+ else
+  state=yomi
+ endif
+ editLen=len(edit$)
+end
+
+'STATE:yomi
+'--------------------------------------------------
+def kanji_yomi
+ if isSpecial(k$) then
+  if k$==BS$ && yomiCsr>0 then dec yomiCsr:yomi$[yomiCsr]=""
+  if k$==" " && yomi$!="" then state=henkan
+  if k$==enter$ then
+   insStr edit$,editCsr,yomi$:editLen=len(edit$)
+   inc editCsr,yomiLen
+   yomi$="":yomiCsr=0
+   state=edit
+  endif
+  if k$==esc$ then yomi$="":yomiCsr=0:state=edit
+ else
+  if k$=="-" then k$="ー"
+  insStr yomi$,yomiCsr,k$:inc yomiCsr
+ endif
+ k$=""
+ yomiLen=len(yomi$)
+ if yomiLen==0 then state=edit
+end
+
+'STATE:henkan
+'--------------------------------------------------
+def kanji_henkan
+ if k$==BS$ || k$==esc$ || len(yomi$)==0 then state=yomi:return
+
+ if k$=="" then
+  'Init henkan
+  knjiGetCandidates replaceStr$(yomi$,","," ")
+  knjiGetCandidates replaceStr$(yomi$,"-","ー")
+  return
+ endif
+
+ if !isSpecial(k$) then
+  'all kakutei
+  insStr edit$,editCsr,knji$:editLen=len(edit$)
+  inc editCsr,len(knji$)
+  yomi$=k$:yomiLen=1:yomiCsr=1
+  inc knjiBunsetsu
+  state=yomi
+  return
+ endif
+
+ if k$==" " || k$==D$ then
+  'next candidate
+  knjiNextCand
+ endif
+
+ if k$==U$ then
+  'previous candidate
+  knjiPrevCand
+ endif
+
+ if k$==enter$ then
+  'bunsetsu kakutei
+  insStr edit$,editCsr,knjiFirst$:editLen=len(edit$)
+  inc editCsr,len(knjiFirst$)
+  var removeLen=len(knjiGetYomi$(knjiBunsetsu))
+  yomi$=right$(yomi$,yomiLen-removeLen)
+  dec yomiLen,removeLen:dec yomiCsr,removeLen
+  if yomi$=="" then state=edit:return
+  inc knjiBunsetsu
+  knjiRest
+  knjiCand=-1
+  knjiNextCand
+ endif
+
+ if k$==L$ || k$==R$ then
+  var l=len(knjiGetYomi$(knjiBunsetsu))
+  inc l,(k$==R$)-(k$==L$)
+  if l>=1 && l<=yomiLen then
+   var y$=replaceStr$(yomi$,","," ")
+   insStr y$,l,","
+   knjiGetCandidates y$
+  endif
+ endif
+end
+
+'漢字変換用の変数を初期化する
+def knjiRest
+ knjiRest$=""
+ var n=knjiBunsetsu+1
+ while 1
+  var cand$=knjiGetCand$(n,0)
+  if cand$=="" then break
+  inc knjiRest$,cand$
+  inc n
+ wend
+end
+
+'変換候補を取得する
+def knjiGetCandidates yomi$
+  knjiBunsetsu=0
+  var url$="http://www.google.com/transliterate?langpair=ja-Hira|ja&text="+urlenCODE$(yomi$)
+  var res$=httpgET$(url$)
+  json$=json_decode$(replaceStr$(res$," ",","))
+  if json$=="" then
+   'エラーがあったので,wgetでリトライ
+   var tmpFile$="/TEMP/.GoogleCGIIME.tmp"
+   var outFile$="/boot/SMILEBOOM/SMILEBASIC-R/workspace"+tmpFile$
+   var tmp$=system$(format$("sudo /usr/bin/wget -O %s %s%s%s",outFile$,q$,url$,q$))
+   if chkfile(tmpFile$)!=1 then
+    beep 2
+    ?
+    color #red:?"漢字変換サーバとの通信に失敗しました."
+    color #white:?"何かキーを押してください."
+    repeat:vsync:until inkey$()!=""
+    stop
+   endif
+   
+   dim d%[0]:load "raw:"+tmpFile$,d%:delete tmpFile$
+   res$=utf8To16(d%)
+   json$=json_decode$(replaceStr$(res$," ",","))
+  endif
+  knjiRest
+  knjiCand=-1
+  knjiNextCand
+end
+
+'次の候補に変更
+def knjiNextCand
+ inc knjiCand
+ knjiFirst$=knjiGetCand$(knjiBunsetsu,knjiCand)
+ if knjiFirst$=="" then
+  'return to the first candidate
+  knjiCand=0
+  knjiFirst$=knjiGetCand$(knjiBunsetsu,knjiCand)
+ endif
+ knjiCsr=len(knjiFirst$)
+ knji$=knjiFirst$+knjiRest$
+ knjiLen=len(knji$)
+end
+
+'前の候補に変更
+def knjiPrevCand
+ var curCand=knjiCand
+ var n
+ while 1
+  if knjiGetCand$(knjiBunsetsu,n)=="" then break
+  inc n
+ wend
+ knjiCand=(knjiCand+n*2-2) mod n
+ knjiFirst$=knjiGetCand$(knjiBunsetsu,knjiCand)
+ knjiCsr=len(knjiFirst$)
+ knji$=knjiFirst$+knjiRest$
+ knjiLen=len(knji$)
+end
+
+'jsonから読みを抽出
+def knjiGetYomi$(knjiBunsetsu)
+ return json_get$(json$,chr$(knjiBunsetsu)+chr$(0))
+end
+
+'jsonから変換候補を抽出
+def knjiGetCand$(knjiBunsetsu,knjiCand)
+ return json_get$(json$,chr$(knjiBunsetsu)+chr$(1)+chr$(knjiCand))
+end
+
+'UTILITIES
+'==================================================
+'Cursor blinking
+'--------------------------------------------------
+def kanji_csrBlink
+ var blink=!(((maincnt-blinkCounter) div 20) mod 2)
+ if state==henkan then kanji_csrBlinkClr:return
+
+ blinkX=x+editCsr+yomiCsr-xOffset
+ blinkY=y
+ if blink then
+  if yomiCsr>0 then gcColor 0,#cyan else gcColor 0,#white
+ endif
+ var x=blinkX mod cw
+ var y=blinkY + (blinkX div cw)
+ gcLocate x,y:gcPrint chr$(gcChkchr(gcCsrx(),gcCsry()))
+ gcLocate x,y
+ gcColor #white,0
+
+ lastBlink=Blink
+end
+
+def kanji_csrBlinkClr
+ if !lastBlink then return
+ gcColor #white,0
+ var x=blinkX mod cw
+ var y=blinkY + (blinkX div cw)
+ gcLocate x,y:gcPrint chr$(gcChkchr(gcCsrx(),gcCsry()))
+ gcLocate x,y
+ lastBlink=0
+end
+
+'String manipulations
+'--------------------------------------------------
+def insStr s$,pos,w$
+ if pos==len(s$) then inc s$,w$ else s$[pos]=w$+s$[pos]
+end
+
+def replaceStr$(in$,from$,to$)
+ var ret$=in$+""
+ var pos=0
+ while 1
+  pos=instr(pos,ret$,from$)
+  if pos==-1 then break
+  ret$[pos]=to$
+  inc pos
+ wend
+ return ret$
+end
+
+'Special keys
+'--------------------------------------------------
+def isSpecial(k$)
+ return isArrow(k$) || k$==BS$ || k$==enter$ || k$==esc$ || k$==" "
+end
+
+def isArrow(k$)
+ var c=asc(k$)
+ return c>=&h1c && c<=&h1f
+end
+
+'Debug print
+'--------------------------------------------------
+def DP pos,s$
+ var cw: console out ,,cw,
+ var x=csrx,y=csry
+ var dx=80/2,dy=45/2+pos
+ color #RED
+ locate dx,dy:?" "*(cw-dx);
+ locate dx,dy:?s$;
+ locate x,y
+ color #white
+end
+
+
+'JSON Decoder
+'==================================================
+def json_get$(j$,key$)
+ if j$=="" then return ""
+ var keyStr$=json_key$(key$)
+ var idx=instr(j$,keyStr$)
+ if idx==-1 then return ""
+ inc idx,len(keyStr$)
+ var l=asc(j$[idx])
+ return mid$(j$,idx+1,l)
+end
+
+def json_key$(key$)
+ return lf$+key$+":"
+end
+
+def json_decode$(j$)
+ var elem$,pos,err
+ json_decodeList j$,0,"" out elem$,pos,err
+ if err then return ""
+ 
+ return elem$
+end
+
+def json_decodeList j$,pos,key$ out outElem$,outPos,outErr
+ outElem$="":outPos=pos:outErr=0:
+ var err$
+
+ if j$[pos]!="[" then
+  outErr=-1:return
+  inc err$,"JSON decode error: '[' not found."+lf$
+  inc err$,"Pre string:"+lf$+left$(j$,pos)+lf$
+  inc err$,"Current string:"+lf$+right$(j$,len(j$)-pos)
+  json_error err$
+ endif
+
+ var elem$,nextPos
+ var n,c$
+ while 1
+  inc pos
+  var myKey$=key$+chr$(n)
+
+  c$=j$[pos]
+  if c$=="[" then
+   'list
+   json_decodeList j$,pos,myKey$ out elem$,nextPos,outErr:if outErr then return
+   'add the elemnt as it is
+   inc outElem$,elem$
+  elseif c$==q$ then
+   'String
+   json_decodeString j$,pos out elem$,nextPos,outErr:if outErr then return
+   'insert a marker in front of the element
+   inc outElem$,lf$+myKey$+":"+chr$(len(elem$))+elem$
+  else
+   outErr=-1:return
+   'inc err$,"JSON decode error: '[' or '"+q$+"' not found."+lf$
+   'inc err$,"Pre string:"+lf$+left$(j$,pos)+lf$
+   'inc err$,"Current string:"+lf$+right$(j$,len(j$)-pos)
+   'json_error err$
+  endif
+
+  pos=nextPos
+  c$=j$[pos]
+  if c$=="]" then
+   break
+  elseif c$=="," then
+  else
+   outErr=-1:return
+   'inc err$,"JSON decode error: ',' not found."+lf$
+   'inc err$,"Pre string:"+lf$+left$(j$,pos)+lf$
+   'inc err$,"Current string:"+lf$+right$(j$,len(j$)-pos)
+   'json_error err$
+  endif
+
+  inc n
+ wend
+
+ outPos=pos+1
+end
+
+def json_decodeString j$,pos out outElem$,outPos,outErr
+ outElem$="":outPos=pos:outErr=0:
+ var err$
+
+ if j$[pos]!=q$ then
+  outErr=-1:return
+  'inc err$,"JSON decode error: '"+q$+"' not found."+lf$
+  'inc err$,"Pre string:"+lf$+left$(j$,pos)+lf$
+  'inc err$,"Current string:"+lf$+right$(j$,len(j$)-pos)
+  'json_error err$
+ endif
+
+ var elem$,nextPos
+ var n,c$
+ inc pos
+ var st=pos
+ while 1
+  var idx=instR(pos,j$,q$)
+  if idx==-1 then
+   outErr=-1:return
+   'inc err$,"JSON decode error: end of string '"+q$+"' not found."+lf$
+   'inc err$,"Pre string:"+lf$+left$(j$,pos)+lf$
+   'inc err$,"Current string:"+lf$+right$(j$,len(j$)-pos)
+   'json_error err$
+  endif
+  pos=idx
+  if j$[pos-1]!="\" then break
+  inc pos
+ wend
+
+ outElem$=mid$(j$,st,pos-st)
+ outPos=pos+1
+end
+
+def json_error m$
+ color #red
+ ?m$
+ color #white
+ stop
+end
+
+'UTF8 to UTF16 Converter
+'==================================================
+def utf8To16(d%)
+ dim ubuf[0]
+ var utf16$
+ 
+ var i,l=len(d%)
+ for i=0 to l-1
+  push ubuf,d%[i]
+  var u0=ubuf[0],ulen=len(ubuf)
+  if (u0 and &h80)==0 then
+   utf8putchr utf16$,ubuf,&h7f
+  elseif ulen==2 && (u0 and &he0)==&hc0 then utf8putchr utf16$,ubuf,&h1f
+  elseif ulen==3 && (u0 and &hf0)==&he0 then utf8putchr utf16$,ubuf,&h0f
+  elseif ulen==4 && (u0 and &hf8)==&hf0 then utf8putchr utf16$,ubuf,&h07
+  elseif ulen==5 && (u0 and &hfa)==&hf8 then utf8putchr utf16$,ubuf,&h03
+  elseif ulen==6 && (u0 and &hfe)==&hfc then utf8putchr utf16$,ubuf,&h01
+  elseif ulen==7 then
+   beep 2
+   ?
+   color #red:?"UTF8[";
+   var j:for j=0 to ulen-1:?format$("%02X",ubuf[j]);","*(j!=(ulen-1));:next
+   ?"]からUTF16への変換に失敗しました."
+   color #white:?"何かキーを押してください."
+   repeat:vsync:until inkey$()!=""
+   stop
+  endif
+ next
+
+ return utf16$
+end
+
+def utf8putchr utf16$,ubuf,mask
+ var c=shift(ubuf) and mask
+ while len(ubuf)
+  c=(c<<6) or (shift(ubuf) and &h3f)
+ wend
+ if c<=&hffff then
+  inc utf16$,chr$(c)
+ endif
+end
+
+'グラフィック用漢字フォント gFont
+'==================================================
+
+'GRPF互換座標テーブル/フォントデータ初期化
+'--------------------------------------------------
+common def gfInit
+ if len(gfCoord%)!=0 then return
+
+ var vp,wp
+ gpage out vp,wp
+
+ '座標テープルの読み込み
+ load "dat:"+gfCoord$,gfCoord%
+
+ 'フォントデータの読み込み
+ load formAT$("grp%d:%s",gfWP,gfName$)
+ gsave gfWP,0,0,64*gfSize,64*gfSize,gfFont%
+
+ gfColor #white,0
+
+ gpage vp,wp
+end
+
+'COLOR 互換DEF
+common def gfColor fc,bc
+ gfPallet%[0]=bc
+ gfPallet%[1]=fc
+end
+
+'COLOR out 互換DEF
+common def gfGetColor out fc,bc
+ bc=gfPallet%[0]
+ fc=gfPallet%[1]
+end
+
+'GPUTCHR 互換DEF
+common def gfPutchr px,py,s$
+ var i,l=len(s$)
+ var size=gfSize*gfSize
+ dim t%[0]
+ var trans=gfPallet%[0]!=0
+ for i=0 to l-1
+  var coord=gfCoord%[asc(s$[i])]
+  var gx=(coord mod 64)*gfSize
+  var gy=(coord div 64)*gfSize
+  copy t%,gfFont%,coord*size,size
+  gload px,py,gfSize,gfSize,t%,gfPallet%,trans
+'  gload px,py,gfSize,gfSize,t%,trans
+'  gcopy gfWP,gx,gy,gx+gfSize-1,gy+gfSize-1,px,py,0
+  inc px,gfSize
+ next
+end
+
+'グラフィック用漢字コンソール gConsole
+'==================================================
+var gcCsrX,gcCsrY
+var gcPage,gcX,gcY,gcW,gcH,gcCW,gcCH
+var gcFC,gcBC
+dim gcVram$
+dim gcContext$[0]
+var gcID
+var gcEnable
+var gcIsInit=false
+
+'グラフィックコンソールのオープン(idは任意のコンソール番号 x,y,w,hの単位はドット)
+common def gcOpen id,x,y,w,h
+ if !gcIsInit then
+  dim t$[0]:gcContext$=t$
+  gcIsInit=true
+ endif
+
+ var vp,wp
+ gpage out vp,wp
+
+ gcCsrX=0:gcCsrY=0
+ gcPage=wp:gcX=x:gcY=y
+ gcCW=w div gfSize:gcCH=h div gfSize
+ gcW=gcCW*gfSize:gcH=gcCH*gfSize
+ gcFC=#white:gcBC=0
+ gcVram$=" "*(gcCW*gcCH)
+ gfInit
+ gcID=id
+
+ while gcID>=len(gcContext$)
+  push gcContext$,""
+ wend
+ gcSaveContext
+
+ gcEnable=true
+end
+
+'アクティブなグラフィックコンソールの選択
+common def gcSelect id
+ if id>=len(gcContext$) then ?formAT$("gc(id=%d) is not opened",id):beep 2:stop
+ if gcEnable then gcSaveContext
+ gcID=id
+ gcLoadContext
+ gcEnable=true
+end
+
+'アクティブなグラフィックコンソールのクローズ(ただし,画面は消去されない)
+common def gcClose
+ gcSaveContext
+ gcEnable=false
+end
+
+'グラフィックコンソールのパラメータとVRAMの退避
+def gcSaveContext
+ var c$
+ inc c$,chr$(gcPage)
+ inc c$,chr$(gcX)
+ inc c$,chr$(gcY)
+ inc c$,chr$(gcW)
+ inc c$,chr$(gcH)
+ inc c$,chr$(gcCsrX)
+ inc c$,chr$(gcCsrY)
+ inc c$,chr$(gcCW)
+ inc c$,chr$(gcCH)
+ inc c$,chr$(gcFC and &hffff)
+ inc c$,chr$(gcFC>>16)
+ inc c$,chr$(gcBC and &hffff)
+ inc c$,chr$(gcBC>>16)
+ inc c$,gcVram$
+ gcContext$[gcID]=c$
+end
+
+'グラフィックコンソールのパラメータとVRAMの復帰
+def gcLoadContext
+ var c$=""+gcContext$[gcID]
+ gcPage=asc(shift(c$))
+ gcX=asc(shift(c$))
+ gcY=asc(shift(c$))
+ gcW=asc(shift(c$))
+ gcH=asc(shift(c$))
+ gcCsrX=asc(shift(c$))
+ gcCsrY=asc(shift(c$))
+ gcCW=asc(shift(c$))
+ gcCH=asc(shift(c$))
+ gcFC=asc(shift(c$))
+ gcFC=gcFC or (asc(shift(c$))<<16)
+ gcBC=asc(shift(c$))
+ gcBC=gcBC or (asc(shift(c$))<<16)
+ gcVram$=c$
+end
+
+'CONSOLE out 互換DEF
+common def gcGetConsole out cx,cy,cw,ch
+ if !gcEnable then console out cx,cy,cw,ch:return
+ cx=0:cy=0:cw=gcCW:ch=gcCH
+end
+
+'CSRX 互換DEF
+def gcCsrx()
+ if !gcEnable then return csrx
+ return gcCsrX
+end
+
+'CSRY 互換DEF
+def gcCsry()
+ if !gcEnable then return csry
+ return gcCsrY
+end
+
+'CHKCHR 互換DEF
+def gcChkchr(x,y)
+ if !gcEnable then return chkchr(x,y)
+ return asc(gcVram$[y*gcCW+x])
+end
+
+'CLS 互換DEF
+common def gcCls
+ if !gcEnable then cls:return
+ var vp,wp:gpage out vp,wp
+ gpage vp,gcPage
+ gfill gcX,gcY,gcX+gcW-1,gcY+gcH-1,0
+ gcVram$=" "*(gcCW*gcCH)
+ gpage vp,wp
+ gcLocate 0,0
+end
+
+'COLOR 互換DEF
+common def gcColor fc,bc
+ if !gcEnable then color fc,bc:return
+ gcFC=fc:gcBC=bc
+end
+
+'LOCATE 互換DEF
+common def gcLocate x,y
+ if !gcEnable then locate x,y:return
+ gcCsrX=x:gcCsrY=y
+end
+
+'PRINT 互換DEF(改行付き)
+common def gcPrintln s$
+ if !gcEnable then print s$:return
+ gcPrint s$:gcNewline
+end
+
+'PRINT 互換DEF(改行なし)
+common def gcPrint s$
+ if !gcEnable then print s$;:return
+ var l=len(s$)
+ var st=0
+ var fc,bc
+ gfGetColor out fc,bc
+ gfColor gcFC,gcBC
+ while 1
+  if gcCsrX>=gcCW then
+   inc gcCsrY:gcCsrX=0
+   if gcCsrY>=gcCH then gcScrollUp
+  endif
+
+  var printLen=min(l-st,gcCW-gcCsrX)
+  if printLen==0 then break
+  var printStr$=mid$(s$,st,printLen)
+  gfPutchr gcX+gcCsrX*gfSize,gcY+gcCsrY*gfSize,printStr$
+  copy gcVram$,gcCsrY*gcCW+gcCsrX,printStr$,0,len(printStr$)
+  inc gcCsrX,printLen
+  inc st,printLen
+  if st>=l then break
+ wend
+ gfColor fc,bc
+end
+
+'改行
+common def gcNewline
+ if !gcEnable then ?"gConsole if not enabled.":stop
+ inc gcCsrY:gcCsrX=0
+ if gcCsrY>=gcCH then gcScrollUp
+end
+
+'1行スクロールアップ
+def gcScrollUp
+ var vp,wp:gpage out vp,wp
+ var gLeft=gcX+gcCW*gfSize-1
+ var gBottom=gcY+gcCH*gfSize-1
+ gpage vp,gcPage
+ gcopy gcX,gcY+gfSize,gLeft,gBottom,gcX,gcY,1
+ gfill gcX,gBottom-gfSize+1,gLeft,gBottom,0
+ gpage vp,wp
+ if gcCH==1 then
+  gcVram$=" "*(gcCW*gcCH)
+ else
+  gcVram$=left$(gcvram$,gcCW*(gcCH-1))
+  inc gcVram$," "*gcCW
+ endif
+ dec gcCsrY
+end
+
